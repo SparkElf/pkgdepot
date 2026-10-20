@@ -1,0 +1,63 @@
+# {{.HostName}} 已收录的包
+
+本文件由 `pkgdepot skill export` 按该主机最近一次 `pkgdepot apply` / `pkgdepot verify` 的结果生成。有清单时，列出的每个版本都在 CLI 侧做过逐字节校验；清单之外的名字或版本不保证存在。
+
+- npm registry: `{{.NPMURL}}`
+- Python index: `{{.PythonURL}}`
+- 生成工具: pkgdepot {{.ToolVersion}}
+
+{{if not .Verified}}## 尚无校验过的清单
+
+该主机还没有完成过 `pkgdepot apply` 或 `pkgdepot verify`。在运维机上执行一次 `pkgdepot status --host {{.HostName}}` 确认部署状态，再重新导出技能，本文件会列出真实可用的包。
+{{else if and (not .HasNPM) (not .HasPython)}}## 清单为空
+
+该主机的包清单已校验，但其中没有任何包。可能是部署时用了 `pkgdepot apply --skip-verify`，或该次的 bundle 里确实没有包。在运维机上补跑 `pkgdepot verify --host {{.HostName}} --bundle <file>`，再重新导出技能。
+{{else}}## npm（{{len .NPM}} 个版本）
+
+{{if .HasNPM}}`package.json` 里把依赖写成下面的精确版本，再用 `.npmrc` 指向私有 registry：
+
+```ini
+registry={{.NPMURL}}
+```
+
+| 包 | 版本 | 安装 |
+|---|---|---|
+{{range .NPM}}| `{{.Name}}` | `{{.Version}}` | `npm install {{.Name}}@{{.Version}}` |
+{{end}}
+一次性安装全部 npm 包：
+
+```bash
+npm install{{range .NPM}} {{.Name}}@{{.Version}}{{end}}
+```
+{{else}}该主机没有收录 npm 包。
+{{end}}
+## Python（{{len .Python}} 个包）
+
+{{if .HasPython}}安装时需要显式指定 index 与 trusted-host（仓库是内网 HTTP）：
+
+```bash
+pip install --index-url {{.PythonURL}} --trusted-host {{.TrustedHost}} <包名>==<版本>
+```
+
+| 包 | 版本 | 安装 |
+|---|---|---|
+{{range .Python}}| `{{.Name}}` | `{{.Version}}` | `pip install --index-url {{$.PythonURL}} --trusted-host {{$.TrustedHost}} {{.Name}}=={{.Version}}` |
+{{end}}
+一次性安装全部 Python 包：
+
+```bash
+pip install --index-url {{.PythonURL}} --trusted-host {{.TrustedHost}} {{range $i, $p := .Python}}{{if $i}} {{end}}{{$p.Name}}=={{$p.Version}}{{end}}
+```
+{{else}}该主机没有收录 Python 包。
+{{end}}
+## 清单外的依赖
+
+清单外的包无法在本机安装。需要时回到外网侧构建机：
+
+1. 把包加进 `pkgdepot.yaml`（npm 用 `npm.packages`，python 用 `python.packages`）。
+2. `pkgdepot bundle -f pkgdepot.yaml -o <file>` 重新构建 bundle。
+3. 把 bundle 拷进内网，`pkgdepot apply --host {{.HostName}} --bundle <file>`。
+4. `pkgdepot skill export --host {{.HostName}} -o <dir>` 重新生成本文件。
+
+apply 是幂等的：新包叠加到已部署的仓库上，原有包继续可用。
+{{end}}

@@ -1,0 +1,54 @@
+# pkgdepot 目标机的 registry 栈。
+#
+# 这个文件由 pkgdepot 在 apply 时渲染并覆盖，不要手改目标机上的副本：
+# 下次 apply 会用二进制内嵌的版本重写它。
+#
+# 关键约束（均已实测）：
+#   - verdaccio 默认以 uid 10001 运行，写不动 root 拥有的 bind mount，会以
+#     "cannot open config file / Permission denied" 启动失败；因此显式 user: "0:0"。
+#   - pypiserver 的 entrypoint 会以 pypiserver 用户（非 root）运行 pypi-server，
+#     挂载的 packages 目录必须 a+rX，否则 /simple/ 返回 500。apply 侧负责 chmod。
+#   - pull_policy: never：目标机完全离线，镜像只来自 bundle 的 docker load；
+#     默认的 missing 策略会尝试联网拉取，在离线机上表现为长时间卡顿后失败。
+services:
+  verdaccio:
+    image: {{printf "%q" .VerdaccioImage}}
+    user: "0:0"
+    pull_policy: never
+    restart: unless-stopped
+    ports:
+      - "{{.NPMPort}}:4873"
+    volumes:
+      - ./npm/conf:/verdaccio/conf
+      - ./npm/storage:/verdaccio/storage
+    environment:
+      VERDACCIO_PORT: "4873"
+      VERDACCIO_PROTOCOL: "http"
+      VERDACCIO_ADDRESS: "0.0.0.0"
+    healthcheck:
+      # 用 wget 而不是 curl：verdaccio 镜像里只有 wget（已实测）。
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:4873/-/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 5s
+
+  pypiserver:
+    image: {{printf "%q" .PypiserverImage}}
+    pull_policy: never
+    restart: unless-stopped
+    ports:
+      - "{{.PythonPort}}:8080"
+    volumes:
+      - ./python/packages:/data/packages
+    # -P . 不能省：-a 非空而 -P 为空时 pypiserver 拒绝启动
+    # ("When auth-ops-list is empty (-a=.), password-file (-P=None) must also be empty")。
+    # 语义上 -a . -P . 表示任何用户可上传/下载且不做密码校验——内网隔离环境的既定取舍（ADR-7）。
+    command: ["run", "-p", "8080", "-a", ".", "-P", ".", "/data/packages"]
+    healthcheck:
+      # 镜像里没有 curl/wget，用 python 自带 urllib（已实测可用）。
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/simple/', timeout=3)"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 5s

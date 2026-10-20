@@ -1,0 +1,5 @@
+# pkgdepot 私有 npm registry。apply 时占位符被替换成目标主机的真实地址。
+registry={{.NPMURL}}
+# 内网 v1 不走 TLS（ADR-7）：npm 默认允许 http registry，这里显式写死以
+# 避免上层 .npmrc 里的 strict-ssl 造成困惑。
+strict-ssl=false

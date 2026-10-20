@@ -1,0 +1,35 @@
+# verdaccio 配置。apply 时原样写到 <baseDir>/npm/conf/config.yaml。
+#
+# 与默认配置的关键区别：
+#   - storage 指到 /verdaccio/storage（挂载点本身就是包根），不是默认的
+#     /verdaccio/storage/data：bundle 里的 npm/storage 已经按 verdaccio 的包根
+#     格式落盘，多一层 data/ 会让种子包全部不可见。
+#   - uplinks: {} 显式留空：离线机上任何 uplink 都会变成请求超时；留空后
+#     verdaccio 对未知包直接 404，客户端失败得干净利落。
+#   - packages '**' 全开：内网无鉴权（ADR-7），且 pkgdepot 的播种方式是直接
+#     写 storage，不经过 publish 流程。
+#
+# migrateToSecureLegacySignature：verdaccio 6 在 Node 22+ 上要求
+# .verdaccio-db.json 的 secret 恰好 32 字符，否则拒绝启动。builder 生成的 secret
+# 满足要求；这个开关是兜底——万一目标机上存在旧 db（例如上一次 apply 留下的
+# 短 secret），verdaccio 会自动重写 secret 而不是启动失败。
+storage: /verdaccio/storage
+auth:
+  htpasswd:
+    file: /verdaccio/conf/htpasswd
+uplinks: {}
+packages:
+  '**':
+    access: $all
+    publish: $all
+    unpublish: $all
+log:
+  type: stdout
+  format: pretty
+  level: warn
+security:
+  api:
+    migrateToSecureLegacySignature: true
+web:
+  title: pkgdepot
+  enable: true

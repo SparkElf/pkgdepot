@@ -1,0 +1,70 @@
+# {{.HostName}} 私有仓库排错
+
+本文件覆盖 pkgdepot 部署在 `{{.HostName}}` 后，内网消费者与仓库本身最常见的故障。每条都给出可观察的报错与判定方法；改动仓库只能在运维机上执行 `pkgdepot apply --host {{.HostName}} --bundle <file>`，消费者机器上没有修复手段。
+
+## registry 连不上
+
+先确认地址与端口：
+
+- npm registry: `{{.NPMURL}}`
+- Python index: `{{.PythonURL}}`
+
+```bash
+curl -fsS {{.NPMURL}}-/ping
+curl -fsS {{.PythonURL}}
+```
+
+`curl` 不通时不要改客户端配置，回到运维机执行 `pkgdepot status --host {{.HostName}}` 看容器状态。
+
+## 目标机 docker 不可用
+
+`pkgdepot apply` 在连接主机后第一件事是检查 docker daemon。失败时命令直接返回错误，仓库根本不会启动。
+
+处理：在目标机确认 docker 已安装且当前 SSH 用户能执行 `docker version`（免 sudo），然后重新 `pkgdepot apply`。
+
+## verdaccio 挂载目录权限
+
+verdaccio 镜像默认以 uid 10001 运行，直接 bind mount 宿主机目录会因写不进去而启动失败。pkgdepot 的做法是让 verdaccio 容器以 root（`user: "0:0"`）运行，因此不需要在目标机上 `chown`。如果手工改过 `compose.yaml` 或递归修改过数据目录属主，把这个设置改回去再 apply。
+
+## pypiserver 目录不可读导致 `/simple/` 报 500
+
+pypiserver 默认以非 root 用户运行，`python/packages` 目录必须对它可读。目录属主被改动后会表现为 `/simple/` 返回 500，而容器本身仍是 running。
+
+处理：恢复目录权限，重新 apply。不要用 `docker restart` 掩盖，因为权限问题在下次重建容器时仍会复现。
+
+## pypiserver 启动失败并提示缺少 `-P`
+
+pypiserver 必须带 `-P .` 参数才能在没有 `.htpasswd` 的情况下启动。pkgdepot 生成的 `compose.yaml` 已包含该参数；如手工改过启动命令，补回 `-P .` 再 apply。
+
+## pip 报 `No matching distribution found`
+
+含义是索引里没有匹配当前解释器与平台的 wheel，不是网络问题。常见原因：
+
+- Python 版本不一致：消费者是 cp312，bundle 只下载了 cp311 的 wheel。
+- 平台标签不一致：消费者是 musl（如 Alpine），bundle 只有 manylinux 的 wheel；或反之。
+
+确认消费者版本：
+
+```bash
+python3 -VV
+```
+
+回到外网构建机，在 `pkgdepot.yaml` 里把 `python.platforms` 与 `python.pythonVersion` 改成与消费者一致（Alpine 用 musllinux，glibc 镜像用 manylinux），重新 `pkgdepot bundle` 再 apply。
+
+## npm 报 `no dist.tarball field`
+
+消费者拿到的 packument（`{{.NPMURL}}<包名>`）里对应版本缺少 `dist.tarball`。这是 bundle 播种数据不完整，不是客户端问题。属于构建侧缺陷：重建 bundle 后重新 apply。
+
+## 传递依赖解析失败
+
+主包能装，但它依赖的包报找不到，或 `npm install` 只装了顶层包。原因是 packument 没有保留 `versions[x].dependencies` / `optionalDependencies`，npm 因此不知道还有传递依赖。同样属于构建侧缺陷：重建 bundle 后重新 apply。
+
+## 端口冲突
+
+`pkgdepot apply` 会在目标机上起两个容器，当前映射 npm `{{.NPMPort}}`、python `{{.PythonPort}}`。端口被占用时 apply 失败或健康检查超时。
+
+处理：在运维机上移除主机条目后按新端口重新登记（`pkgdepot host remove <name>` → `pkgdepot host add <name> ... --npm-port <p> --python-port <p>`），再 apply；也可以直接 `pkgdepot host add <name> ...` 覆盖同名条目。
+
+## 包名或版本不在清单里
+
+先查 `references/packages.md`。不在清单里时不要试图连接公网——本机没有公网路由。按技能正文「依赖缺失时」的步骤回外网侧补包、重建 bundle、重新 apply。

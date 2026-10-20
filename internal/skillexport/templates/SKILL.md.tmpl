@@ -1,0 +1,88 @@
+---
+name: {{.SkillName}}
+description: 在 {{.HostName}} 内网主机上从私有 npm / PyPI 仓库安装依赖。当安装或构建时出现包找不到、registry 连不上、平台标签不匹配，或需要确认某个包是否已被收录时使用。
+---
+
+# {{.SkillName}}
+
+本技能描述 `{{.HostName}}` 这台内网主机上由 pkgdepot 部署的私有包仓库：仓库地址、已收录的包、客户端配置、缺包时怎么处理。主机完全离线，除了下面两个地址之外没有其他包源。
+
+## 仓库地址
+
+| 生态 | 地址 |
+|---|---|
+| npm registry | {{.NPMURL}} |
+| Python index | {{.PythonURL}} |
+
+这两个地址由 pkgdepot 导出技能时从主机配置中读取，是本机唯一可用的包来源。
+
+## 客户端配置
+
+npm 项目在仓库根目录写 `.npmrc`：
+
+```ini
+registry={{.NPMURL}}
+```
+
+pip 使用同一台主机的 simple 索引：
+
+```bash
+pip install --index-url {{.PythonURL}} --trusted-host {{.TrustedHost}} <包名>
+```
+
+或写入 `pip.conf`：
+
+```ini
+[global]
+index-url = {{.PythonURL}}
+trusted-host = {{.TrustedHost}}
+```
+
+## 仓库里有什么
+
+{{if not .Verified}}该主机还没有完成过 `pkgdepot apply` / `pkgdepot verify`，因此没有经过逐字节校验的包清单。先在有 SSH 权限的运维机上执行 `pkgdepot status --host {{.HostName}}` 确认部署状态；技能内容会在下一次 `pkgdepot skill export --host {{.HostName}} -o <dir>` 时刷新。
+
+仓库地址可以按上面的配置直接使用，但「哪些包一定存在」目前无法从本技能判断。
+{{else if and (not .HasNPM) (not .HasPython)}}该主机的包清单已校验，但其中没有任何包。可能是部署时用了 `pkgdepot apply --skip-verify`，或该次的 bundle 里确实没有包。在运维机上补跑 `pkgdepot verify --host {{.HostName}} --bundle <file>`，然后重新导出技能。
+
+仓库地址可用，但不要假定任何包存在。
+{{else}}以下是 `pkgdepot verify` 逐字节校验通过的包，版本固定，不在列表里的版本不要假定可用。附安装方式的完整列表见 `references/packages.md`。
+
+### npm（{{len .NPM}} 个版本）
+
+{{if .HasNPM}}```bash
+npm view <包名> versions --registry {{.NPMURL}}
+npm install {{.ExampleNPM}}
+```
+
+{{range .NPM}}- `{{.Name}}@{{.Version}}`
+{{end}}{{else}}该主机没有收录 npm 包。
+{{end}}
+### Python（{{len .Python}} 个包）
+
+{{if .HasPython}}```bash
+pip install --index-url {{.PythonURL}} --trusted-host {{.TrustedHost}} {{.ExamplePython}}
+```
+
+{{range .Python}}- `{{.Name}}=={{.Version}}`
+{{end}}{{else}}该主机没有收录 Python 包。
+{{end}}{{end}}
+## 依赖缺失时
+
+按顺序排查，不要尝试访问公网——本机没有公网路由，公网 registry 只会超时。
+
+1. 查 `references/packages.md`：确认包名是否在清单里，注意包名大小写与 npm scope。
+2. 版本不在清单里：先试清单中的版本；版本必须一致时按第 4 步补包。
+3. 包完全不在清单里：按第 4 步补包。
+4. 回外网侧补包：在有外网的构建机上，把包加进 `pkgdepot.yaml`（npm 用 `npm.packages`，python 用 `python.packages`），重新执行 `pkgdepot bundle -f pkgdepot.yaml -o <file>`，把新 bundle 拷进内网，再执行 `pkgdepot apply --host {{.HostName}} --bundle <file>`。apply 是幂等的，已有包不受影响。
+5. 补包完成后重新导出技能，让清单与本技能保持同步：`pkgdepot skill export --host {{.HostName}} -o <dir>`。
+
+其他报错的定位方法见 `references/troubleshooting.md`。
+
+## 边界
+
+- 仓库只提供包文件，不提供构建工具链：node、npm、python、pip 需由内网镜像自行提供。
+- 没有 TLS 与鉴权，只在隔离网段内使用；不要把这两个地址暴露到其他网段。
+- 不要修改主机上的仓库数据目录（`{{.BaseDir}}`），否则下次 `pkgdepot verify` 会报校验失败。
+
+由 pkgdepot {{.ToolVersion}} 生成；主机 `{{.HostName}}` 的包清单变化后需要重新导出。

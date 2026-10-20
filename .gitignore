@@ -1,0 +1,9 @@
+/bin/
+/dist/
+*.test
+*.out
+.DS_Store
+/pkgdepot-bundle/
+# 临时探针目录：开发期用来手工验证机制，不属于交付物
+/internal/*/tmp*/
+/internal/*/tmplive/
